@@ -1,20 +1,24 @@
 import os
 import time
+import base64
+import subprocess
 import json
 import random
-import subprocess
 from datetime import datetime
-from typing import Dict, Any, Optional
-
+from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from PIL import Image
-from dotenv import load_dotenv
 import io
+import logging
+from dotenv import load_dotenv
 
-# Load API key from .env file
+# Load API Key from .env
 load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DEVICE_NAME = "emulator-5554"
+
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger(__name__)
 
 class PokemonVLMBot:
     def __init__(self, api_key: str, device_name: str = "emulator-5554"):
@@ -46,7 +50,21 @@ class PokemonVLMBot:
             "left": "KEYCODE_DPAD_LEFT",
             "right": "KEYCODE_DPAD_RIGHT",
             "l": "KEYCODE_BUTTON_L1",
-            "r": "KEYCODE_BUTTON_R1"
+            "r": "KEYCODE_BUTTON_R1",
+
+            # Added flexible mappings
+            "move_up": "KEYCODE_DPAD_UP",
+            "move_down": "KEYCODE_DPAD_DOWN",
+            "move_left": "KEYCODE_DPAD_LEFT",
+            "move_right": "KEYCODE_DPAD_RIGHT",
+            "go_up": "KEYCODE_DPAD_UP",
+            "go_down": "KEYCODE_DPAD_DOWN",
+            "go_left": "KEYCODE_DPAD_LEFT",
+            "go_right": "KEYCODE_DPAD_RIGHT",
+            "press_a": "KEYCODE_BUTTON_A",
+            "press_b": "KEYCODE_BUTTON_B",
+            "press_start": "KEYCODE_BUTTON_START",
+            "press_select": "KEYCODE_BUTTON_SELECT"
         }
 
         self._check_adb_connection()
@@ -55,82 +73,52 @@ class PokemonVLMBot:
         try:
             result = subprocess.run(['adb', 'devices'], capture_output=True, text=True)
             if self.device_name in result.stdout:
-                print(f"Connected to {self.device_name}")
+                logger.info(f"Connected to {self.device_name}")
+                return True
             else:
-                print(f"Device {self.device_name} not found.")
-                print("Available devices:")
-                print(result.stdout)
-                exit(1)
+                logger.error(f"Device {self.device_name} not found")
+                logger.info("Available devices:")
+                logger.info(result.stdout)
+                return False
         except Exception as e:
-            print(f"ADB connection failed: {e}")
-            exit(1)
+            logger.error(f"ADB connection failed: {e}")
+            return False
 
     def take_screenshot(self) -> Optional[str]:
         try:
             subprocess.run(['adb', '-s', self.device_name, 'shell', 'screencap', '-p',
                             f'/sdcard/{self.screenshot_path}'], check=True)
-
             subprocess.run(['adb', '-s', self.device_name, 'pull',
                             f'/sdcard/{self.screenshot_path}', self.screenshot_path], check=True)
-
             return self.screenshot_path
         except Exception as e:
-            print(f"Screenshot failed: {e}")
+            logger.error(f"Screenshot failed: {e}")
             return None
 
-    def _normalize_action(self, action: str) -> str:
-        action = action.strip().lower()
-
-        mappings = {
-            "walk down": "down",
-            "go down": "down",
-            "move down": "down",
-            "walk up": "up",
-            "go up": "up",
-            "move up": "up",
-            "walk left": "left",
-            "go left": "left",
-            "move left": "left",
-            "walk right": "right",
-            "go right": "right",
-            "move right": "right",
-            "press a": "a",
-            "press b": "b",
-            "press start": "start",
-            "press select": "select",
-        }
-
-        return mappings.get(action, action)
-
     def send_input(self, action: str, duration: float = 0.1) -> bool:
-        normalized = self._normalize_action(action)
-        keycode = self.button_mappings.get(normalized)
-
-        if keycode:
-            try:
+        try:
+            keycode = self.button_mappings.get(action)
+            if keycode:
                 subprocess.run(['adb', '-s', self.device_name, 'shell', 'input', 'keyevent', keycode], check=True)
-                print(f"Sent input: {normalized}")
+                logger.info(f"Sent input: {action}")
                 time.sleep(duration)
                 return True
-            except Exception as e:
-                print(f"Failed to send input '{normalized}': {e}")
+            else:
+                logger.error(f"Unknown action: {action}")
                 return False
-        else:
-            print(f"Unknown action: {action}")
+        except Exception as e:
+            logger.error(f"Input failed: {e}")
             return False
-
 
     def analyze_screen_with_gemini(self, screenshot_path: str) -> Dict[str, Any]:
         try:
             with open(screenshot_path, 'rb') as img_file:
                 image = Image.open(io.BytesIO(img_file.read()))
-
             prompt = self._create_analysis_prompt()
             response = self.model.generate_content([prompt, image])
-
             return self._parse_gemini_response(response.text)
         except Exception as e:
-            print(f"Gemini analysis failed: {e}")
+            logger.error(f"Gemini analysis failed: {e}")
             return {"error": str(e), "action": "wait", "reasoning": "Analysis failed"}
 
     def _create_analysis_prompt(self) -> str:
@@ -167,6 +155,7 @@ Expected JSON format:
                 return parsed
             return self._fallback_parse(response_text)
         except json.JSONDecodeError:
+            logger.warning("JSON parsing failed, using fallback")
             return self._fallback_parse(response_text)
 
     def _fallback_parse(self, text: str) -> Dict[str, Any]:
@@ -175,7 +164,7 @@ Expected JSON format:
                 return {
                     "action": action,
                     "reasoning": text,
-                    "scene_description": "Parsing failed, fallback used.",
+                    "scene_description": "Parsing failed, used fallback.",
                     "confidence": 3
                 }
         return {
@@ -195,6 +184,10 @@ Expected JSON format:
             panic_level = 0
 
         self.game_state["panic_mode"] = panic_level >= 7
+        if panic_level >= 7:
+            logger.warning("PANIC MODE ACTIVATED!")
+        elif panic_level <= 3:
+            self.game_state["panic_mode"] = False
 
         if analysis.get("action") == self.game_state.get("last_action"):
             self.game_state["stuck_counter"] += 1
@@ -212,21 +205,21 @@ Expected JSON format:
             self.game_state["reasoning_history"] = self.game_state["reasoning_history"][-50:]
 
     def log_analysis(self, analysis: Dict[str, Any]):
-        print("--- Analysis Summary ---")
-        print(f"Scene: {analysis.get('scene_description', 'N/A')}")
-        print(f"Action: {analysis.get('action', 'N/A')}")
-        print(f"Confidence: {analysis.get('confidence', 'N/A')} / 10")
-        print(f"Panic Level: {analysis.get('panic_level', 'N/A')} / 10")
-        print(f"Reasoning: {analysis.get('reasoning', 'N/A')}")
+        logger.info("Analysis Summary:")
+        logger.info(f"   Scene: {analysis.get('scene_description', 'N/A')}")
+        logger.info(f"   Action: {analysis.get('action', 'N/A')}")
+        logger.info(f"   Confidence: {analysis.get('confidence', 'N/A')}/10")
+        logger.info(f"   Panic Level: {analysis.get('panic_level', 'N/A')}/10")
+        logger.info(f"   Reasoning: {analysis.get('reasoning', 'N/A')}")
 
         if self.game_state["panic_mode"]:
-            print("AI is in PANIC MODE.")
+            logger.warning("AI is in PANIC MODE!")
         if self.game_state["stuck_counter"] > 5:
-            print(f"Possible stuck state detected ({self.game_state['stuck_counter']} repeats)")
+            logger.warning(f"Possible stuck state detected ({self.game_state['stuck_counter']} repeats)")
 
     def handle_stuck_state(self) -> bool:
         if self.game_state["stuck_counter"] > 10:
-            print("AI seems stuck. Trying random input.")
+            logger.warning("AI seems stuck. Trying random input.")
             self.send_input(random.choice(['up', 'down', 'left', 'right', 'b', 'start']))
             self.game_state["stuck_counter"] = 0
             time.sleep(1)
@@ -234,15 +227,13 @@ Expected JSON format:
         return False
 
     def run_game_loop(self, max_iterations: int = 1000, delay: float = 3.0):
-        print("Starting the Pokemon VLM bot.\n")
-
+        logger.info("Starting the Pokemon VLM bot.")
         for i in range(max_iterations):
             try:
-                print(f"Iteration {i + 1}/{max_iterations}")
-
+                logger.info(f"Iteration {i + 1}/{max_iterations}")
                 screenshot = self.take_screenshot()
                 if not screenshot:
-                    print("Screenshot failed. Skipping.")
+                    logger.error("Screenshot failed, skipping iteration")
                     time.sleep(delay)
                     continue
 
@@ -260,41 +251,41 @@ Expected JSON format:
                 time.sleep(delay)
 
             except KeyboardInterrupt:
-                print("Bot interrupted by user.")
+                logger.info("Interrupted by user.")
                 break
             except Exception as e:
-                print(f"Unexpected error: {e}")
+                logger.error(f"Error during loop: {e}")
                 time.sleep(delay)
-
-        print("Game loop finished.")
+        logger.info("Game loop finished.")
 
     def save_game_state(self, filename: str = "game_state.json"):
         try:
             with open(filename, 'w') as f:
                 json.dump(self.game_state, f, indent=2)
-            print(f"Saved game state to {filename}")
+            logger.info(f"Saved game state to {filename}")
         except Exception as e:
-            print(f"Couldn't save game state: {e}")
+            logger.error(f"Couldn't save game state: {e}")
 
     def load_game_state(self, filename: str = "game_state.json"):
         try:
             with open(filename, 'r') as f:
                 self.game_state = json.load(f)
-            print(f"Loaded game state from {filename}")
-        except Exception:
-            print("Couldn’t load previous game state. Starting fresh.")
-
+            logger.info(f"Loaded game state from {filename}")
+        except Exception as e:
+            logger.error(f"Couldn't load game state: {e}")
 
 def main():
-    if not API_KEY:
-        print("Gemini API key is missing. Please set it in the .env file.")
+    if not GEMINI_API_KEY:
+        logger.error("Gemini API key not set in .env file.")
         return
 
-    bot = PokemonVLMBot(API_KEY, DEVICE_NAME)
+    bot = PokemonVLMBot(GEMINI_API_KEY, DEVICE_NAME)
     bot.load_game_state()
 
     try:
         bot.run_game_loop(max_iterations=500, delay=2.0)
+    except KeyboardInterrupt:
+        logger.info("Bot execution manually stopped.")
     finally:
         bot.save_game_state()
 
