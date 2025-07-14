@@ -122,27 +122,41 @@ class PokemonVLMBot:
             return {"error": str(e), "action": "wait", "reasoning": "Analysis failed"}
 
     def _create_analysis_prompt(self) -> str:
-        return f"""You are an AI playing Pokemon FireRed. Analyze this screenshot and provide a JSON response.
+        return f"""You are an AI agent playing Pokémon FireRed inside an emulator. Your job is to analyze the screenshot and suggest the next action based strictly on the current game state.
+
+Only respond with **allowed actions** from this list:
+- move_up
+- move_down
+- move_left
+- move_right
+- press_a
+- press_b
+- press_start
+- press_select
+
+Do NOT use free-form actions like "interact with PC" or "walk to stairs". Translate them into one of the allowed commands. For example, if the goal is to go down the stairs, say "move_right" (or the correct direction). If interaction is needed, use "press_a".
+
+Provide your response in the following JSON format (no extra explanation):
+{{
+  "scene_description": "...",
+  "current_location": "...",
+  "pokemon_visible": [...],
+  "menu_state": "...",
+  "health_status": "...",
+  "action": "<one of the allowed actions only>",
+  "reasoning": "...",
+  "panic_level": 0-10,
+  "objectives": [...],
+  "confidence": 0-10
+}}
 
 Current Game State:
 - Location: {self.game_state['current_location']}
 - Last Action: {self.game_state['last_action']}
 - Stuck Counter: {self.game_state['stuck_counter']}
 - Panic Mode: {self.game_state['panic_mode']}
+"""
 
-Expected JSON format:
-{{
-    "scene_description": "...",
-    "current_location": "...",
-    "pokemon_visible": [...],
-    "menu_state": "...",
-    "health_status": "...",
-    "action": "...",
-    "reasoning": "...",
-    "panic_level": 0-10,
-    "objectives": [...],
-    "confidence": 0-10
-}}"""
 
     def _parse_gemini_response(self, response_text: str) -> Dict[str, Any]:
         try:
